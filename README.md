@@ -25,6 +25,7 @@ png2svg [-ia][-log][-nm][-m][-o] <png filename|directory> [<svg filename|directo
 |-nm|No pixel merge|
 |-m|Minify|
 |-o|Output svg|
+|-p|Use path element|
 
 ## Examples
 

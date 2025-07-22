@@ -40,6 +40,9 @@ var
       if LParam = '-o' then
         Include(LOptions, psOutputSvg)
       else
+      if LParam = '-p' then
+        Include(LOptions, psUsePathElement)
+      else
       if LSource.IsEmpty then
         LSource := LParam
       else

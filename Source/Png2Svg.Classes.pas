@@ -6,7 +6,7 @@ uses
   System.Classes, System.SysUtils, Vcl.Imaging.pngimage, Vcl.Graphics;
 
 type
-  TPng2SvgOption = (psIgnoreAlpha, psNoPixelMerge, psMinify, psOutputSvg, psSaveSvg, psShowLog);
+  TPng2SvgOption = (psIgnoreAlpha, psNoPixelMerge, psMinify, psOutputSvg, psSaveSvg, psShowLog, psUsePathElement);
   TPng2SvgOptions = set of TPng2SvgOption;
 
   TPng2Svg = class(TObject)
@@ -22,11 +22,14 @@ type
   strict private
     FFilenamePng: string;
     FFilenameSvg: string;
+    FHeight: Integer;
     FOptions: TPng2SvgOptions;
     FSVGStrings: TStringList;
+    FWidth: Integer;
+    function ColorToHex(const AColor: TColor): string;
     function GetTimeStamp: string;
     function MinifyXML(const AXML: string): string;
-    procedure GenerateSVGFromRects(const ARects: TArray<TColorRect>; const AOutput: TStrings);
+    procedure GenerateSVGFromRects(const ARects: TArray<TColorRect>);
     procedure MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
   public
     constructor Create(const AOptions: TPng2SvgOptions);
@@ -41,7 +44,7 @@ type
 implementation
 
 uses
-  Winapi.Windows, System.Generics.Collections, System.Diagnostics, System.UITypes;
+  Winapi.Windows, System.Diagnostics, System.UITypes;
 
 constructor TPng2Svg.Create(const AOptions: TPng2SvgOptions);
 begin
@@ -98,88 +101,126 @@ begin
   end;
 end;
 
-procedure TPng2Svg.GenerateSVGFromRects(const ARects: TArray<TColorRect>; const AOutput: TStrings);
+function TPng2Svg.ColorToHex(const AColor: TColor): string;
+begin
+  Result := IntToHex(GetRValue(AColor), 2) + IntToHex(GetGValue(AColor), 2) + IntToHex(GetBValue(AColor), 2);
+end;
+
+procedure TPng2Svg.GenerateSVGFromRects(const ARects: TArray<TColorRect>);
+const
+  SVG_START_TAG = '<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">';
+  SVG_END_TAG   = '</svg>';
 type
   TGroup = record
     Color: TColor;
     Alpha: Byte;
-    Rects: TList<TColorRect>;
+    Rects: TArray<TColorRect>;
+    RectCount: Integer;
   end;
 var
-  LGroups: TList<TGroup>;
+  LGroups: TArray<TGroup>;
+  LGroupsCount: Integer;
   LRect: TColorRect;
   LIndex, LGroupIndex: Integer;
   LGroup: TGroup;
-  LFound: Boolean;
   LColorStr: string;
   LOpacity: string;
-
-  function ColorToHex(const AColor: TColor): string;
-  begin
-    Result := IntToHex(GetRValue(AColor), 2) + IntToHex(GetGValue(AColor), 2) + IntToHex(GetBValue(AColor), 2);
-  end;
-
+  LStringBuilder: TStringBuilder;
 begin
-  LGroups := TList<TGroup>.Create;
-  try
-    for LRect in ARects do
-    begin
-      LGroupIndex := -1;
-      LFound := False;
+  FSVGStrings.Clear;
+  FSVGStrings.Add(Format(SVG_START_TAG, [FWidth, FHeight]));
 
-      for LIndex := 0 to LGroups.Count - 1 do
-      begin
-        LGroup := LGroups[LIndex];
+  SetLength(LGroups, 256);
+  LGroupsCount := 0;
 
-        if (LGroup.Color = LRect.Color) and (LGroup.Alpha = LRect.Alpha) then
-        begin
-          LFound := True;
-          LGroupIndex := LIndex;
+  for LRect in ARects do
+  begin
+    LGroupIndex := -1;
 
-          Break;
-        end;
-      end;
-
-      if not LFound then
-      begin
-        LGroup.Color := LRect.Color;
-        LGroup.Alpha := LRect.Alpha;
-        LGroup.Rects := TList<TColorRect>.Create;
-
-        LGroups.Add(LGroup);
-
-        LGroupIndex := LGroups.Count - 1;
-      end;
-
-      LGroups[LGroupIndex].Rects.Add(LRect);
-    end;
-
-    for LIndex := 0 to LGroups.Count - 1 do
+    for LIndex := 0 to LGroupsCount - 1 do
     begin
       LGroup := LGroups[LIndex];
 
-      if LGroup.Color = 0 then
-        LColorStr := ''
-      else
-        LColorStr := ' fill="#' + ColorToHex(LGroup.Color) + '"';
+      if (LGroup.Color = LRect.Color) and (LGroup.Alpha = LRect.Alpha) then
+      begin
+        LGroupIndex := LIndex;
 
-      if LGroup.Alpha = 255 then
-        LOpacity := ''
-      else
-        LOpacity := ' fill-opacity="' + FormatFloat('.###', LGroup.Alpha / 255, TFormatSettings.Invariant) + '"';
+        Break;
+      end;
+    end;
 
-      AOutput.Add('<g' + LColorStr + LOpacity + '>');
+    if LGroupIndex = -1 then
+    begin
+      if LGroupsCount >= Length(LGroups) then
+        SetLength(LGroups, Length(LGroups) * 2);
+
+      with LGroups[LGroupsCount] do
+      begin
+        Color := LRect.Color;
+        Alpha := LRect.Alpha;
+        SetLength(Rects, 64);
+        RectCount := 0;
+      end;
+
+      LGroupIndex := LGroupsCount;
+      Inc(LGroupsCount);
+    end;
+
+    with LGroups[LGroupIndex] do
+    begin
+      if RectCount >= Length(Rects) then
+        SetLength(Rects, Length(Rects) * 2);
+
+      Rects[RectCount] := LRect;
+      Inc(RectCount);
+    end;
+  end;
+
+  SetLength(LGroups, LGroupsCount);
+
+  for LIndex := 0 to LGroupsCount - 1 do
+  begin
+    LGroup := LGroups[LIndex];
+
+    SetLength(LGroup.Rects, LGroup.RectCount);
+
+    if LGroup.Color = 0 then
+      LColorStr := ''
+    else
+      LColorStr := ' fill="#' + ColorToHex(LGroup.Color) + '"';
+
+    if LGroup.Alpha = 255 then
+      LOpacity := ''
+    else
+      LOpacity := ' fill-opacity="' + FormatFloat('.###', LGroup.Alpha / 255, TFormatSettings.Invariant) + '"';
+
+    if psUsePathElement in FOptions then
+    begin
+      LStringBuilder := TStringBuilder.Create;
+      try
+        LStringBuilder.Append('  <path d="');
+
+        for LRect in LGroup.Rects do
+          LStringBuilder.Append(Format('M%d %dL%d %dL%d %dL%d %d Z', [LRect.X, LRect.Y, LRect.X + LRect.Width,
+            LRect.Y, LRect.X + LRect.Width, LRect.Y + LRect.Height, LRect.X, LRect.Y + LRect.Height]));
+
+        FSVGStrings.Add(LStringBuilder.ToString + '"' + LColorStr + LOpacity + '/>');
+      finally
+        LStringBuilder.Free;
+      end;
+    end
+    else
+    begin
+      FSVGStrings.Add('<g' + LColorStr + LOpacity + '>');
 
       for LRect in LGroup.Rects do
-        AOutput.Add(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width, LRect.Height]));
+        FSVGStrings.Add(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width, LRect.Height]));
 
-      AOutput.Add('</g>');
-
-      LGroup.Rects.Free;
+      FSVGStrings.Add('</g>');
     end;
-  finally
-    LGroups.Free;
   end;
+
+  FSVGStrings.Add(SVG_END_TAG);
 end;
 
 procedure TPng2Svg.MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
@@ -331,9 +372,6 @@ begin
 end;
 
 procedure TPng2Svg.Convert;
-const
-  SVG_START_TAG = '<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">';
-  SVG_END_TAG   = '</svg>';
 var
   LPngImage: TPngImage;
   LRects: TArray<TColorRect>;
@@ -345,43 +383,37 @@ begin
     LStopwatch := TStopwatch.StartNew;
   end;
 
-  with FSVGStrings do
+  LPngImage := TPngImage.Create;
+  try
+    LPngImage.LoadFromFile(FFilenamePng);
+
+    FWidth := LPngImage.Width;
+    FHeight := LPngImage.Height;
+
+    MergePixels(LRects, LPngImage);
+    GenerateSVGFromRects(LRects);
+  finally
+    LPngImage.Free;
+  end;
+
+  if psShowLog in FOptions then
   begin
-    Clear;
+    LStopwatch.Stop;
+    WriteLn(GetTimeStamp + ': Conversion to ' + FFilenameSvg + ' done in ' + LStopwatch.ElapsedMilliseconds.ToString + 'ms');
+  end;
 
-    LPngImage := TPngImage.Create;
-    try
-      LPngImage.LoadFromFile(FFilenamePng);
+  if psMinify in FOptions then
+    FSVGStrings.Text := MinifyXML(FSVGStrings.Text);
 
-      Add(Format(SVG_START_TAG, [LPngImage.Width, LPngImage.Height]));
-
-      MergePixels(LRects, LPngImage);
-      GenerateSVGFromRects(LRects, FSVGStrings);
-
-      Add(SVG_END_TAG);
-    finally
-      LPngImage.Free;
-    end;
+  if psOutputSvg in FOptions then
+    WriteLn(GetSVG)
+  else
+  if psSaveSvg in FOptions then
+  begin
+    FSVGStrings.SaveToFile(FFilenameSvg, TEncoding.UTF8);
 
     if psShowLog in FOptions then
-    begin
-      LStopwatch.Stop;
-      WriteLn(GetTimeStamp + ': Conversion to ' + FFilenameSvg + ' done in ' + LStopwatch.ElapsedMilliseconds.ToString + 'ms');
-    end;
-
-    if psMinify in FOptions then
-      Text := MinifyXML(Text);
-
-    if psOutputSvg in FOptions then
-      WriteLn(GetSVG)
-    else
-    if psSaveSvg in FOptions then
-    begin
-      SaveToFile(FFilenameSvg, TEncoding.UTF8);
-
-      if psShowLog in FOptions then
-        WriteLn(GetTimeStamp + ': Svg saved into ' + FFilenameSvg);
-    end;
+      WriteLn(GetTimeStamp + ': Svg saved into ' + FFilenameSvg);
   end;
 end;
 
