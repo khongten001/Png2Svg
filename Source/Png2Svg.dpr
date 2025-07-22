@@ -65,15 +65,16 @@ var
       Result := IncludeTrailingPathDelimiter(Result) + ChangeFileExt(ExtractFilename(LSource), SVG_EXT)
     else
     begin
-      LPath := IncludeTrailingPathDelimiter(ExtractFilepath(LSource)) + IncludeTrailingPathDelimiter(LDestination);
+      LPath := IncludeTrailingPathDelimiter(ExtractFilepath(LSource)) + IncludeTrailingPathDelimiter(Result);
 
       if DirectoryExists(LPath) then
         Result := LPath + ChangeFileExt(ExtractFilename(LSource), SVG_EXT)
       else
-      if not DirectoryExists(ExtractFilepath(LDestination)) and not ExtractFileExt(LDestination).IsEmpty then
-        Result := IncludeTrailingPathDelimiter(ExtractFilepath(LSource)) + LDestination
+      if not DirectoryExists(ExtractFilepath(Result)) and not ExtractFileExt(Result).IsEmpty then
+        Result := IncludeTrailingPathDelimiter(ExtractFilepath(LSource)) + Result
       else
-        raise EDirectoryNotFoundException.Create(Format('The specified directory "%s" is not found', [LDestination]));
+      if not FileExists(Result) then
+        raise EDirectoryNotFoundException.Create(Format('The specified directory "%s" is not found', [Result]));
     end;
   end;
 

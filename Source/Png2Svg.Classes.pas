@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, Vcl.Imaging.pngimage;
+  System.Classes, System.SysUtils, Vcl.Imaging.pngimage, Vcl.Graphics;
 
 type
   TPng2SvgOption = (psIgnoreAlpha, psNoPixelMerge, psMinify, psOutputSvg, psSaveSvg, psShowLog);
@@ -13,9 +13,7 @@ type
   private type
     TColorRect = record
       Alpha: Byte;
-      RValue: Byte;
-      GValue: Byte;
-      BValue: Byte;
+      Color: TColor;
       Height: Integer;
       Width: Integer;
       X: Integer;
@@ -27,8 +25,9 @@ type
     FOptions: TPng2SvgOptions;
     FSVGStrings: TStringList;
     function GetTimeStamp: string;
-    function MergePixels(const APngImage: TPngImage): TArray<TColorRect>;
     function MinifyXML(const AXML: string): string;
+    procedure GenerateSVGFromRects(const ARects: TArray<TColorRect>; const AOutput: TStrings);
+    procedure MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
   public
     constructor Create(const AOptions: TPng2SvgOptions);
     destructor Destroy; override;
@@ -42,7 +41,7 @@ type
 implementation
 
 uses
-  Winapi.Windows, System.Diagnostics, System.UITypes, Vcl.Graphics;
+  Winapi.Windows, System.Generics.Collections, System.Diagnostics, System.UITypes;
 
 constructor TPng2Svg.Create(const AOptions: TPng2SvgOptions);
 begin
@@ -59,12 +58,131 @@ begin
   inherited Destroy;
 end;
 
-function TPng2Svg.GetSVG: string;
+function TPng2Svg.GetTimeStamp: string;
 begin
-  Result := FSVGStrings.Text;
+  Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now);
 end;
 
-function TPng2Svg.MergePixels(const APngImage: TPngImage): TArray<TColorRect>;
+function TPng2Svg.MinifyXML(const AXML: string): string;
+begin
+  Result := '';
+
+  var LText := '';
+  var LOutsideTag := False;
+  var LPChar := PChar(AXML);
+
+  while LPChar^ <> #0 do
+  begin
+    if LPChar^ = '<' then
+    begin
+      Result := Result + Trim(LText);
+      LText := '';
+      LOutsideTag := False;
+    end;
+
+    if LOutsideTag then
+    begin
+      if (LPChar^ <> #10) and (LPChar^ <> #13) then
+        LText := LText + LPChar^
+      else
+        LText := LText + #32
+    end
+    else
+    if (LPChar^ <> #10) and (LPChar^ <> #13) then
+      Result := Result + LPChar^;
+
+    if LPChar^ = '>' then
+      LOutsideTag := True;
+
+    Inc(LPChar);
+  end;
+end;
+
+procedure TPng2Svg.GenerateSVGFromRects(const ARects: TArray<TColorRect>; const AOutput: TStrings);
+type
+  TGroup = record
+    Color: TColor;
+    Alpha: Byte;
+    Rects: TList<TColorRect>;
+  end;
+var
+  LGroups: TList<TGroup>;
+  LRect: TColorRect;
+  LIndex, LGroupIndex: Integer;
+  LGroup: TGroup;
+  LFound: Boolean;
+  LColorStr: string;
+  LOpacity: string;
+
+  function ColorToHex(const AColor: TColor): string;
+  begin
+    Result := IntToHex(GetRValue(AColor), 2) + IntToHex(GetGValue(AColor), 2) + IntToHex(GetBValue(AColor), 2);
+  end;
+
+begin
+  LGroups := TList<TGroup>.Create;
+  try
+    for LRect in ARects do
+    begin
+      LGroupIndex := -1;
+      LFound := False;
+
+      for LIndex := 0 to LGroups.Count - 1 do
+      begin
+        LGroup := LGroups[LIndex];
+
+        if (LGroup.Color = LRect.Color) and (LGroup.Alpha = LRect.Alpha) then
+        begin
+          LFound := True;
+          LGroupIndex := LIndex;
+
+          Break;
+        end;
+      end;
+
+      if not LFound then
+      begin
+        LGroup.Color := LRect.Color;
+        LGroup.Alpha := LRect.Alpha;
+        LGroup.Rects := TList<TColorRect>.Create;
+
+        LGroups.Add(LGroup);
+
+        LGroupIndex := LGroups.Count - 1;
+      end;
+
+      LGroups[LGroupIndex].Rects.Add(LRect);
+    end;
+
+    for LIndex := 0 to LGroups.Count - 1 do
+    begin
+      LGroup := LGroups[LIndex];
+
+      if LGroup.Color = 0 then
+        LColorStr := ''
+      else
+        LColorStr := ' fill="#' + ColorToHex(LGroup.Color) + '"';
+
+      if LGroup.Alpha = 255 then
+        LOpacity := ''
+      else
+        LOpacity := ' fill-opacity="' + FormatFloat('.###', LGroup.Alpha / 255, TFormatSettings.Invariant) + '"';
+
+      AOutput.Add('<g' + LColorStr + LOpacity + '>');
+
+      for LRect in LGroup.Rects do
+        AOutput.Add(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width, LRect.Height]));
+
+      AOutput.Add('</g>');
+
+      LGroup.Rects.Free;
+    end;
+  finally
+    LGroups.Free;
+  end;
+end;
+
+procedure TPng2Svg.MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
 var
   LVisited: array of array of Boolean;
   LPixelCache: array of array of TColor;
@@ -88,7 +206,8 @@ begin
 
   SetLength(LAlphaCache, LPngHeight);
 
-  SetLength(Result, 1024);
+  SetLength(ARects, 1024);
+
   LRectsCount := 0;
 
   for LY := 0 to LPngHeight - 1 do
@@ -187,77 +306,37 @@ begin
         for LExpandedX := 0 to LWidth - 1 do
           LVisited[LY + LExpandedY, LX + LExpandedX] := True;
 
-      if LRectsCount >= Length(Result) then
-        SetLength(Result, Length(Result) * 2);
+      if LRectsCount >= Length(ARects) then
+        SetLength(ARects, Length(ARects) * 2);
 
-      with Result[LRectsCount] do
+      with ARects[LRectsCount] do
       begin
         X := LX;
         Y := LY;
         Width := LWidth;
         Height := LHeight;
-        RValue := GetRValue(LColor);
-        GValue := GetGValue(LColor);
-        BValue := GetBValue(LColor);
+        Color := LColor;
         Alpha := LAlpha;
       end;
 
       Inc(LRectsCount);
     end;
 
-  SetLength(Result, LRectsCount);
+  SetLength(ARects, LRectsCount);
 end;
 
-function TPng2Svg.GetTimeStamp: string;
+function TPng2Svg.GetSVG: string;
 begin
-  Result := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now);
-end;
-
-function TPng2Svg.MinifyXML(const AXML: string): string;
-begin
-  Result := '';
-
-  var LText := '';
-  var LOutsideTag := False;
-  var LPChar := PChar(AXML);
-
-  while LPChar^ <> #0 do
-  begin
-    if LPChar^ = '<' then
-    begin
-      Result := Result + Trim(LText);
-      LText := '';
-      LOutsideTag := False;
-    end;
-
-    if LOutsideTag then
-    begin
-      if (LPChar^ <> #10) and (LPChar^ <> #13) then
-        LText := LText + LPChar^
-      else
-        LText := LText + #32
-    end
-    else
-    if (LPChar^ <> #10) and (LPChar^ <> #13) then
-      Result := Result + LPChar^;
-
-    if LPChar^ = '>' then
-      LOutsideTag := True;
-
-    Inc(LPChar);
-  end;
+  Result := FSVGStrings.Text;
 end;
 
 procedure TPng2Svg.Convert;
 const
-  SVG_START_TAG = '<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg">';
-  SVG_RECT_TAG  = '  <rect x="%d" y="%d" width="%d" height="%d" fill="rgb(%d,%d,%d)" fill-opacity="%s" />';
+  SVG_START_TAG = '<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">';
   SVG_END_TAG   = '</svg>';
 var
   LPngImage: TPngImage;
-  LFormatSettings: TFormatSettings;
   LRects: TArray<TColorRect>;
-  LRect: TColorRect;
   LStopwatch: TStopwatch;
 begin
   if psShowLog in FOptions then
@@ -276,14 +355,8 @@ begin
 
       Add(Format(SVG_START_TAG, [LPngImage.Width, LPngImage.Height]));
 
-      LFormatSettings := TFormatSettings.Create;
-      LFormatSettings.DecimalSeparator := '.';
-
-      LRects := MergePixels(LPngImage);
-
-      for LRect in LRects do
-        Add(Format(SVG_RECT_TAG, [LRect.X, LRect.Y, LRect.Width, LRect.Height, LRect.RValue, LRect.GValue, LRect.BValue,
-          FormatFloat('0.######', LRect.Alpha / 255, LFormatSettings)]));
+      MergePixels(LRects, LPngImage);
+      GenerateSVGFromRects(LRects, FSVGStrings);
 
       Add(SVG_END_TAG);
     finally
