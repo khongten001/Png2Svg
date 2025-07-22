@@ -13,7 +13,7 @@ Png to pixel-perfect svg conversion class for Delphi.
 ### Usage
 
 ```
-png2svg [-ia][-log][-nm][-m][-o] <png filename|directory> [<svg filename|directory>]
+png2svg [-ia][-log][-nm][-m][-o][-p] <png filename|directory> [<svg filename|directory>]
 ```
 
 ### Params
