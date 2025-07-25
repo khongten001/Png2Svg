@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, Vcl.Imaging.pngimage, Vcl.Graphics;
+  System.Classes, System.SysUtils, Vcl.Graphics, Vcl.Imaging.pngimage;
 
 type
   TPng2SvgOption = (psIgnoreAlpha, psNoPixelMerge, psMinify, psOutputSvg, psSaveSvg, psShowLog, psUsePathElement);
@@ -44,7 +44,7 @@ type
 implementation
 
 uses
-  Winapi.Windows, System.Diagnostics, System.UITypes;
+  Winapi.Windows, System.Diagnostics, System.Generics.Collections, System.UITypes;
 
 constructor TPng2Svg.Create(const AOptions: TPng2SvgOptions);
 begin
@@ -102,8 +102,26 @@ begin
 end;
 
 function TPng2Svg.ColorToHex(const AColor: TColor): string;
+var
+  LRed, LGreen, LBlue: Byte;
 begin
-  Result := IntToHex(GetRValue(AColor), 2) + IntToHex(GetGValue(AColor), 2) + IntToHex(GetBValue(AColor), 2);
+  LRed := GetRValue(AColor);
+  LGreen := GetGValue(AColor);
+  LBlue := GetBValue(AColor);
+
+  if (LRed shr 4 = LRed and $F) and (LGreen shr 4 = LGreen and $F) and (LBlue shr 4 = LBlue and $F) then
+    Result := Format('#%X%X%X', [LRed and $F, LGreen and $F, LBlue and $F])
+  else
+    Result := Format('#%.2X%.2X%.2X', [LRed, LGreen, LBlue]);
+end;
+
+function MakeColorAlphaKey(const AColor: TColor; const AAlpha: Byte): Cardinal;
+var
+  LRGB: Cardinal;
+begin
+  LRGB := Cardinal(ColorToRGB(AColor)) and $FFFFFF;
+
+  Result := Cardinal(AAlpha) shl 24 or LRGB;
 end;
 
 procedure TPng2Svg.GenerateSVGFromRects(const ARects: TArray<TColorRect>);
@@ -118,65 +136,61 @@ type
     RectCount: Integer;
   end;
 var
+  LGroupMap: TDictionary<Cardinal, Integer>;
+  LKey: Cardinal;
   LGroups: TArray<TGroup>;
   LGroupsCount: Integer;
   LRect: TColorRect;
-  LIndex, LGroupIndex: Integer;
+  LIndex, LGroupIndex, LRectIndex: Integer;
   LGroup: TGroup;
   LColorStr: string;
   LOpacity: string;
   LStringBuilder: TStringBuilder;
+  LLastX, LLastY, LX, LY: Integer;
 begin
   FSVGStrings.Clear;
   FSVGStrings.Add(Format(SVG_START_TAG, [FWidth, FHeight]));
 
-  SetLength(LGroups, 256);
+  SetLength(LGroups, 512);
   LGroupsCount := 0;
 
-  for LRect in ARects do
-  begin
-    LGroupIndex := -1;
-
-    for LIndex := 0 to LGroupsCount - 1 do
+  LGroupMap := TDictionary<Cardinal, Integer>.Create;
+  try
+    for LRect in ARects do
     begin
-      LGroup := LGroups[LIndex];
+      LKey := MakeColorAlphaKey(LRect.Color, LRect.Alpha);
 
-      if (LGroup.Color = LRect.Color) and (LGroup.Alpha = LRect.Alpha) then
+      if not LGroupMap.TryGetValue(LKey, LGroupIndex) then
       begin
-        LGroupIndex := LIndex;
+        if LGroupsCount >= Length(LGroups) then
+          SetLength(LGroups, LGroupsCount * 2);
 
-        Break;
-      end;
-    end;
+        with LGroups[LGroupsCount] do
+        begin
+          Color := LRect.Color;
+          Alpha := LRect.Alpha;
+          SetLength(Rects, 256);
+          RectCount := 0;
+        end;
 
-    if LGroupIndex = -1 then
-    begin
-      if LGroupsCount >= Length(LGroups) then
-        SetLength(LGroups, Length(LGroups) * 2);
-
-      with LGroups[LGroupsCount] do
-      begin
-        Color := LRect.Color;
-        Alpha := LRect.Alpha;
-        SetLength(Rects, 64);
-        RectCount := 0;
+        LGroupIndex := LGroupsCount;
+        LGroupMap.Add(LKey, LGroupIndex);
+        Inc(LGroupsCount);
       end;
 
-      LGroupIndex := LGroupsCount;
-      Inc(LGroupsCount);
-    end;
+      with LGroups[LGroupIndex] do
+      begin
+        if RectCount >= Length(Rects) then
+          SetLength(Rects, RectCount * 2);
 
-    with LGroups[LGroupIndex] do
-    begin
-      if RectCount >= Length(Rects) then
-        SetLength(Rects, Length(Rects) * 2);
-
-      Rects[RectCount] := LRect;
-      Inc(RectCount);
+        Rects[RectCount] := LRect;
+        Inc(RectCount);
+      end;
     end;
+  finally
+    SetLength(LGroups, LGroupsCount);
+    LGroupMap.Free;
   end;
-
-  SetLength(LGroups, LGroupsCount);
 
   for LIndex := 0 to LGroupsCount - 1 do
   begin
@@ -187,7 +201,7 @@ begin
     if LGroup.Color = 0 then
       LColorStr := ''
     else
-      LColorStr := ' fill="#' + ColorToHex(LGroup.Color) + '"';
+      LColorStr := ' fill="' + ColorToHex(LGroup.Color) + '"';
 
     if LGroup.Alpha = 255 then
       LOpacity := ''
@@ -198,13 +212,29 @@ begin
     begin
       LStringBuilder := TStringBuilder.Create;
       try
-        LStringBuilder.Append('  <path d="');
+        LStringBuilder.Append('  <path' + LColorStr + LOpacity + ' d="');
 
-        for LRect in LGroup.Rects do
-          LStringBuilder.Append(Format('M%d %dL%d %dL%d %dL%d %d Z', [LRect.X, LRect.Y, LRect.X + LRect.Width,
-            LRect.Y, LRect.X + LRect.Width, LRect.Y + LRect.Height, LRect.X, LRect.Y + LRect.Height]));
+        LLastX := 0;
+        LLastY := 0;
 
-        FSVGStrings.Add(LStringBuilder.ToString + '"' + LColorStr + LOpacity + '/>');
+        for LRectIndex := 0 to High(LGroup.Rects) do
+        with LGroup.Rects[LRectIndex] do
+        begin
+          if LRectIndex = 0 then
+            LStringBuilder.Append(Format('M%d %dh%dv%dH%dZ', [X, Y, Width, Height, X]))
+          else
+          begin
+            LX := X - LLastX;
+            LY := Y - LLastY;
+
+            LStringBuilder.Append(Format('m%d %dh%dv%dh%dZ', [LX, LY, Width, Height, -Width]));
+          end;
+
+          LLastX := X;
+          LLastY := Y;
+        end;
+     
+        FSVGStrings.Add(LStringBuilder.ToString + '"/>');
       finally
         LStringBuilder.Free;
       end;
@@ -391,6 +421,10 @@ begin
     FHeight := LPngImage.Height;
 
     MergePixels(LRects, LPngImage);
+
+    if psShowLog in FOptions then
+      WriteLn(GetTimeStamp + ': Rect count ' + Length(LRects).ToString);
+
     GenerateSVGFromRects(LRects);
   finally
     LPngImage.Free;
