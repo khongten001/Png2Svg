@@ -28,6 +28,7 @@ type
     FWidth: Integer;
     function ColorToHex(const AColor: TColor): string;
     function GetTimeStamp: string;
+    function MakeColorAlphaKey(const AColor: TColor; const AAlpha: Byte): Cardinal;
     function MinifyXML(const AXML: string): string;
     procedure GenerateSVGFromRects(const ARects: TArray<TColorRect>);
     procedure MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
@@ -115,7 +116,7 @@ begin
     Result := Format('#%.2X%.2X%.2X', [LRed, LGreen, LBlue]);
 end;
 
-function MakeColorAlphaKey(const AColor: TColor; const AAlpha: Byte): Cardinal;
+function TPng2Svg.MakeColorAlphaKey(const AColor: TColor; const AAlpha: Byte): Cardinal;
 var
   LRGB: Cardinal;
 begin
@@ -259,38 +260,34 @@ var
   LPixelCache: array of array of TColor;
   LAlphaCache: array of PByteArray;
   LRectsCount: Integer;
-  LPngHeight, LPngWidth: Integer;
   LX, LY, LExpandedX, LExpandedY: Integer;
   LAlpha: Byte;
   LColor: TColor;
   LWidth, LHeight: Integer;
   LCanExpand: Boolean;
 begin
-  LPngHeight := APngImage.Height;
-  LPngWidth := APngImage.Width;
+  SetLength(LVisited, FHeight, FWidth);
+  SetLength(LPixelCache, FHeight);
 
-  SetLength(LVisited, LPngHeight, LPngWidth);
-  SetLength(LPixelCache, LPngHeight);
+  for LY := 0 to FHeight - 1 do
+    SetLength(LPixelCache[LY], FWidth);
 
-  for LY := 0 to LPngHeight - 1 do
-    SetLength(LPixelCache[LY], LPngWidth);
-
-  SetLength(LAlphaCache, LPngHeight);
+  SetLength(LAlphaCache, FHeight);
 
   SetLength(ARects, 1024);
 
   LRectsCount := 0;
 
-  for LY := 0 to LPngHeight - 1 do
+  for LY := 0 to FHeight - 1 do
   begin
     LAlphaCache[LY] := APngImage.AlphaScanline[LY];
 
-    for LX := 0 to LPngWidth - 1 do
+    for LX := 0 to FWidth - 1 do
       LPixelCache[LY][LX] := ColorToRGB(APngImage.Pixels[LX, LY]);
   end;
 
-  for LY := 0 to LPngHeight - 1 do
-    for LX := 0 to LPngWidth - 1 do
+  for LY := 0 to FHeight - 1 do
+    for LX := 0 to FWidth - 1 do
     begin
       if LVisited[LY, LX] then
         Continue;
@@ -312,7 +309,7 @@ begin
       LWidth := 1;
 
       if not (psNoPixelMerge in FOptions) then
-      while (LX + LWidth < LPngWidth) and not LVisited[LY, LX + LWidth] do
+      while (LX + LWidth < FWidth) and not LVisited[LY, LX + LWidth] do
       begin
         if Assigned(LAlphaCache[LY]) then
         begin
@@ -333,7 +330,7 @@ begin
       LHeight := 1;
 
       if not (psNoPixelMerge in FOptions) then
-      while LY + LHeight < LPngHeight do
+      while LY + LHeight < FHeight do
       begin
         LCanExpand := True;
 
