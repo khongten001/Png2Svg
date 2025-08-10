@@ -139,7 +139,9 @@ begin
         FilenameSvg := GetDestination;
 
         Convert;
-      end;
+      end
+      else
+        raise EFileNotFoundException.Create(Format('The specified file "%s" is not found', [LSource]));
     finally
       Free;
     end;

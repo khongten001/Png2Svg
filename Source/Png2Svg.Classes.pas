@@ -14,22 +14,24 @@ type
     TColorRect = record
       Alpha: Byte;
       Color: TColor;
-      Height: Integer;
-      Width: Integer;
       X: Integer;
       Y: Integer;
+      Height: Integer;
+      Width: Integer;
     end;
   strict private
     FFilenamePng: string;
     FFilenameSvg: string;
     FHeight: Integer;
     FOptions: TPng2SvgOptions;
+    FPixelSize: Integer;
     FSVGStrings: TStringList;
     FWidth: Integer;
     function ColorToHex(const AColor: TColor): string;
     function GetTimeStamp: string;
     function MakeColorAlphaKey(const AColor: TColor; const AAlpha: Byte): Cardinal;
     function MinifyXML(const AXML: string): string;
+    function ScalePixelSize(const AValue: Integer): Integer; inline;
     procedure GenerateSVGFromRects(const ARects: TArray<TColorRect>);
     procedure MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
   public
@@ -40,6 +42,7 @@ type
     property FilenamePng: string read FFilenamePng write FFilenamePng;
     property FilenameSvg: string read FFilenameSvg write FFilenameSvg;
     property Options: TPng2SvgOptions read FOptions write FOptions;
+    property PixelSize: Integer read FPixelSize write FPixelSize;
   end;
 
 implementation
@@ -53,6 +56,7 @@ begin
 
   FSVGStrings := TStringList.Create;
   FOptions := AOptions;
+  FPixelSize := 1;
 end;
 
 destructor TPng2Svg.Destroy;
@@ -68,47 +72,70 @@ begin
 end;
 
 function TPng2Svg.MinifyXML(const AXML: string): string;
+var
+  LText: string;
+  LOutsideTag: Boolean;
+  LPChar: PChar;
+  LStringBuilder: TStringBuilder;
 begin
   Result := '';
 
-  var LText := '';
-  var LOutsideTag := False;
-  var LPChar := PChar(AXML);
+  LText := '';
+  LOutsideTag := False;
+  LPChar := PChar(AXML);
 
-  while LPChar^ <> #0 do
-  begin
-    if LPChar^ = '<' then
+  LStringBuilder := TStringBuilder.Create;
+  try
+    while LPChar^ <> #0 do
     begin
-      Result := Result + Trim(LText);
-      LText := '';
-      LOutsideTag := False;
+      if LPChar^ = '<' then
+      begin
+        LStringBuilder.Append(LText.Trim);
+        LText := '';
+        LOutsideTag := False;
+      end;
+
+      if LOutsideTag then
+      begin
+        if (LPChar^ <> #10) and (LPChar^ <> #13) then
+          LText := LText + LPChar^
+        else
+          LText := LText + #32
+      end
+      else
+      if (LPChar^ <> #10) and (LPChar^ <> #13) then
+        LStringBuilder.Append(LPChar^);
+
+      if LPChar^ = '>' then
+        LOutsideTag := True;
+
+      Inc(LPChar);
     end;
 
-    if LOutsideTag then
-    begin
-      if (LPChar^ <> #10) and (LPChar^ <> #13) then
-        LText := LText + LPChar^
-      else
-        LText := LText + #32
-    end
-    else
-    if (LPChar^ <> #10) and (LPChar^ <> #13) then
-      Result := Result + LPChar^;
-
-    if LPChar^ = '>' then
-      LOutsideTag := True;
-
-    Inc(LPChar);
+    Result := LStringBuilder.ToString;
+  finally
+    LStringBuilder.Free;
   end;
+end;
+
+function TPng2Svg.ScalePixelSize(const AValue: Integer): Integer;
+begin
+  if FPixelSize = 1 then
+    Result := AValue
+  else
+    Result := AValue * FPixelSize;
 end;
 
 function TPng2Svg.ColorToHex(const AColor: TColor): string;
 var
+  LRGB: Integer;
   LRed, LGreen, LBlue: Byte;
 begin
-  LRed := GetRValue(AColor);
-  LGreen := GetGValue(AColor);
-  LBlue := GetBValue(AColor);
+  LRGB := ColorToRGB(AColor);
+
+  LRed := GetRValue(LRGB);
+  LGreen := GetGValue(LRGB);
+  LBlue := GetBValue(LRGB);
 
   if (LRed shr 4 = LRed and $F) and (LGreen shr 4 = LGreen and $F) and (LBlue shr 4 = LBlue and $F) then
     Result := Format('#%X%X%X', [LRed and $F, LGreen and $F, LBlue and $F])
@@ -137,6 +164,7 @@ type
     RectCount: Integer;
   end;
 var
+  LStringBuilder: TStringBuilder;
   LGroupMap: TDictionary<Cardinal, Integer>;
   LKey: Cardinal;
   LGroups: TArray<TGroup>;
@@ -146,73 +174,71 @@ var
   LGroup: TGroup;
   LColorStr: string;
   LOpacity: string;
-  LStringBuilder: TStringBuilder;
   LLastX, LLastY, LX, LY: Integer;
 begin
-  FSVGStrings.Clear;
-  FSVGStrings.Add(Format(SVG_START_TAG, [FWidth, FHeight]));
-
-  SetLength(LGroups, 512);
-  LGroupsCount := 0;
-
-  LGroupMap := TDictionary<Cardinal, Integer>.Create;
+  LStringBuilder := TStringBuilder.Create;
   try
-    for LRect in ARects do
-    begin
-      LKey := MakeColorAlphaKey(LRect.Color, LRect.Alpha);
+    LStringBuilder.Append(Format(SVG_START_TAG, [ScalePixelSize(FWidth), ScalePixelSize(FHeight)]) + sLineBreak);
 
-      if not LGroupMap.TryGetValue(LKey, LGroupIndex) then
+    SetLength(LGroups, 512);
+    LGroupsCount := 0;
+
+    LGroupMap := TDictionary<Cardinal, Integer>.Create;
+    try
+      for LRect in ARects do
       begin
-        if LGroupsCount >= Length(LGroups) then
-          SetLength(LGroups, LGroupsCount * 2);
+        LKey := MakeColorAlphaKey(LRect.Color, LRect.Alpha);
 
-        with LGroups[LGroupsCount] do
+        if not LGroupMap.TryGetValue(LKey, LGroupIndex) then
         begin
-          Color := LRect.Color;
-          Alpha := LRect.Alpha;
-          SetLength(Rects, 256);
-          RectCount := 0;
+          if LGroupsCount >= Length(LGroups) then
+            SetLength(LGroups, LGroupsCount * 2);
+
+          with LGroups[LGroupsCount] do
+          begin
+            Color := LRect.Color;
+            Alpha := LRect.Alpha;
+            SetLength(Rects, 256);
+            RectCount := 0;
+          end;
+
+          LGroupIndex := LGroupsCount;
+          LGroupMap.Add(LKey, LGroupIndex);
+          Inc(LGroupsCount);
         end;
 
-        LGroupIndex := LGroupsCount;
-        LGroupMap.Add(LKey, LGroupIndex);
-        Inc(LGroupsCount);
-      end;
+        with LGroups[LGroupIndex] do
+        begin
+          if RectCount >= Length(Rects) then
+            SetLength(Rects, RectCount * 2);
 
-      with LGroups[LGroupIndex] do
-      begin
-        if RectCount >= Length(Rects) then
-          SetLength(Rects, RectCount * 2);
-
-        Rects[RectCount] := LRect;
-        Inc(RectCount);
+          Rects[RectCount] := LRect;
+          Inc(RectCount);
+        end;
       end;
+    finally
+      SetLength(LGroups, LGroupsCount);
+      LGroupMap.Free;
     end;
-  finally
-    SetLength(LGroups, LGroupsCount);
-    LGroupMap.Free;
-  end;
 
-  for LIndex := 0 to LGroupsCount - 1 do
-  begin
-    LGroup := LGroups[LIndex];
-
-    SetLength(LGroup.Rects, LGroup.RectCount);
-
-    if LGroup.Color = 0 then
-      LColorStr := ''
-    else
-      LColorStr := ' fill="' + ColorToHex(LGroup.Color) + '"';
-
-    if LGroup.Alpha = 255 then
-      LOpacity := ''
-    else
-      LOpacity := ' fill-opacity="' + FormatFloat('.###', LGroup.Alpha / 255, TFormatSettings.Invariant) + '"';
-
-    if psUsePathElement in FOptions then
+    for LIndex := 0 to LGroupsCount - 1 do
     begin
-      LStringBuilder := TStringBuilder.Create;
-      try
+      LGroup := LGroups[LIndex];
+
+      SetLength(LGroup.Rects, LGroup.RectCount);
+
+      if LGroup.Color = 0 then
+        LColorStr := ''
+      else
+        LColorStr := ' fill="' + ColorToHex(LGroup.Color) + '"';
+
+      if LGroup.Alpha = 255 then
+        LOpacity := ''
+      else
+        LOpacity := ' fill-opacity="' + FormatFloat('.###', LGroup.Alpha / 255, TFormatSettings.Invariant) + '"';
+
+      if psUsePathElement in FOptions then
+      begin
         LStringBuilder.Append('  <path' + LColorStr + LOpacity + ' d="');
 
         LLastX := 0;
@@ -234,24 +260,27 @@ begin
           LLastX := X;
           LLastY := Y;
         end;
-     
-        FSVGStrings.Add(LStringBuilder.ToString + '"/>');
-      finally
-        LStringBuilder.Free;
+
+        LStringBuilder.Append('"/>' + sLineBreak);
+      end
+      else
+      begin
+        LStringBuilder.Append('<g' + LColorStr + LOpacity + '>' + sLineBreak);
+
+        for LRect in LGroup.Rects do
+          LStringBuilder.Append(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width,
+            LRect.Height]) + sLineBreak);
+
+        LStringBuilder.Append('</g>' + sLineBreak);
       end;
-    end
-    else
-    begin
-      FSVGStrings.Add('<g' + LColorStr + LOpacity + '>');
-
-      for LRect in LGroup.Rects do
-        FSVGStrings.Add(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width, LRect.Height]));
-
-      FSVGStrings.Add('</g>');
     end;
-  end;
 
-  FSVGStrings.Add(SVG_END_TAG);
+    LStringBuilder.Append(SVG_END_TAG);
+
+    FSVGStrings.Text := LStringBuilder.ToString;
+  finally
+    LStringBuilder.Free;
+  end;
 end;
 
 procedure TPng2Svg.MergePixels(var ARects: TArray<TColorRect>; const APngImage: TPngImage);
@@ -379,10 +408,10 @@ begin
 
       with ARects[LRectsCount] do
       begin
-        X := LX;
-        Y := LY;
-        Width := LWidth;
-        Height := LHeight;
+        X := ScalePixelSize(LX);
+        Y := ScalePixelSize(LY);
+        Width := ScalePixelSize(LWidth);
+        Height := ScalePixelSize(LHeight);
         Color := LColor;
         Alpha := LAlpha;
       end;
