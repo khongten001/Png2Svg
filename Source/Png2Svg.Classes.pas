@@ -178,7 +178,7 @@ var
 begin
   LStringBuilder := TStringBuilder.Create;
   try
-    LStringBuilder.Append(Format(SVG_START_TAG, [ScalePixelSize(FWidth), ScalePixelSize(FHeight)]) + sLineBreak);
+    LStringBuilder.AppendLine(Format(SVG_START_TAG, [ScalePixelSize(FWidth), ScalePixelSize(FHeight)]));
 
     SetLength(LGroups, 512);
     LGroupsCount := 0;
@@ -261,17 +261,17 @@ begin
           LLastY := Y;
         end;
 
-        LStringBuilder.Append('"/>' + sLineBreak);
+        LStringBuilder.AppendLine('"/>');
       end
       else
       begin
-        LStringBuilder.Append('<g' + LColorStr + LOpacity + '>' + sLineBreak);
+        LStringBuilder.AppendLine('<g' + LColorStr + LOpacity + '>');
 
         for LRect in LGroup.Rects do
-          LStringBuilder.Append(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width,
-            LRect.Height]) + sLineBreak);
+          LStringBuilder.AppendLine(Format('  <rect x="%d" y="%d" width="%d" height="%d"/>', [LRect.X, LRect.Y, LRect.Width,
+            LRect.Height]));
 
-        LStringBuilder.Append('</g>' + sLineBreak);
+        LStringBuilder.AppendLine('</g>');
       end;
     end;
 
